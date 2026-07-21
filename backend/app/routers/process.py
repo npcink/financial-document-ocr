@@ -22,12 +22,17 @@ from app.core import config
 from app.services.job_queue import PRIORITY_RETRY, job_queue
 from app.services.pipeline import process_single_file
 from app.utils.field_normalizer import normalize_result_for_table
+from app.utils.safe_paths import resource_path, sanitize_filename, validate_resource_id
 
 router = APIRouter()
 
 TERMINAL_STATUSES = {"completed", "partial_failed", "timeout_partial", "failed"}
 RETRYABLE_JOB_STATUSES = {"failed", "partial_failed", "timeout_partial"}
 RECENT_RESULT_STATUSES = {"completed", "failed", "pending"}
+
+
+def _stored_file_path(job_id: object, filename: object) -> str:
+    return resource_path(db.UPLOAD_DIR, job_id, sanitize_filename(filename))
 
 
 def _calc_eta(job: dict) -> tuple:
@@ -226,7 +231,10 @@ async def _queue_child_unfinished(child: dict) -> int:
     for r in results:
         if r["filename"] not in retry_filenames:
             continue
-        filepath = f"uploads/{child['id']}/{r['filename']}"
+        try:
+            filepath = _stored_file_path(child["id"], r["filename"])
+        except ValueError:
+            continue
         if not os.path.exists(filepath):
             continue
         await asyncio.to_thread(db.update_result, r["id"], status="pending", error_message="等待处理")
@@ -267,7 +275,10 @@ async def _queue_unfinished_job(job: dict) -> dict:
     for r in results:
         if r["filename"] not in retry_filenames:
             continue
-        filepath = f"uploads/{job_id}/{r['filename']}"
+        try:
+            filepath = _stored_file_path(job_id, r["filename"])
+        except ValueError:
+            continue
         if not os.path.exists(filepath):
             continue
         await asyncio.to_thread(
@@ -489,6 +500,10 @@ async def retry_single(
     result_id: int,
 ):
     """重试单个文件的识别"""
+    try:
+        job_id = validate_resource_id(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="任务不存在") from exc
     api_token = getattr(request.state, "session_id", "")
     job = await asyncio.to_thread(db.verify_job_ownership, job_id, api_token)
     if not job:
@@ -508,7 +523,10 @@ async def retry_single(
         raise HTTPException(status_code=400, detail="只有失败的结果可以重试")
 
     target_job_id = target["job_id"]
-    filepath = f"uploads/{target_job_id}/{target['filename']}"
+    try:
+        filepath = _stored_file_path(target_job_id, target["filename"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="文件路径无效，请重新上传") from exc
     if not os.path.exists(filepath):
         raise HTTPException(status_code=400, detail="文件已清理，无法重试，请重新上传")
 
@@ -522,6 +540,10 @@ async def retry_single(
 @router.delete("/{job_id}")
 async def delete_job(request: Request, job_id: str):
     """删除历史任务及其关联数据"""
+    try:
+        job_id = validate_resource_id(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="任务不存在") from exc
     api_token = getattr(request.state, "session_id", "")
     job = await asyncio.to_thread(db.verify_job_ownership, job_id, api_token)
     if not job:
@@ -531,14 +553,17 @@ async def delete_job(request: Request, job_id: str):
     await asyncio.to_thread(db.delete_job, job_id)
 
     for child in children:
-        upload_dir = f"uploads/{child['id']}"
+        try:
+            upload_dir = resource_path(db.UPLOAD_DIR, child["id"])
+        except ValueError:
+            continue
         if os.path.exists(upload_dir):
             shutil.rmtree(upload_dir)
-    upload_dir = f"uploads/{job_id}"
+    upload_dir = resource_path(db.UPLOAD_DIR, job_id)
     if os.path.exists(upload_dir):
         shutil.rmtree(upload_dir)
 
-    export_dir = f"exports/{job_id}"
+    export_dir = resource_path(db.EXPORT_DIR, job_id)
     if os.path.exists(export_dir):
         shutil.rmtree(export_dir)
 
