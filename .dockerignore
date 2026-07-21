@@ -6,4 +6,5 @@ data/
 frontend/node_modules/
 backend/static/
 *.md
+!THIRD_PARTY_NOTICES.md
 .sisyphus/

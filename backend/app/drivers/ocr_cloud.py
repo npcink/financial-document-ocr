@@ -5,12 +5,12 @@ import base64
 import os
 import mimetypes
 import asyncio
-import shutil
 from typing import Dict, Any
 
 from app.core import config
 from app.services.rate_limit import siliconflow_request_with_retry
 from app.utils.image_preprocess import preprocess_image
+from app.utils.pdf_renderer import get_pdf_page_count, render_pdf_pages
 
 _http_client: httpx.AsyncClient = None
 
@@ -173,19 +173,14 @@ async def _ocr_image_bytes(image_bytes: bytes) -> Dict[str, Any]:
 
 
 async def ocr_pdf(pdf_path: str) -> Dict[str, Any]:
-    import fitz
-
-    doc = fitz.open(pdf_path)
-    total_pages = min(len(doc), MAX_PDF_PAGES)
-    doc.close()
-
-    doc = fitz.open(pdf_path)
-    page_data = []
-    for page_num in range(1, total_pages + 1):
-        page = doc.load_page(page_num - 1)
-        pix = page.get_pixmap(dpi=150)
-        page_data.append((page_num, pix.tobytes("png")))
-    doc.close()
+    source_page_count = get_pdf_page_count(pdf_path)
+    page_data = list(render_pdf_pages(pdf_path, max_pages=MAX_PDF_PAGES))
+    total_pages = len(page_data)
+    if source_page_count > MAX_PDF_PAGES:
+        print(
+            f"[OCR] PDF 超过 {MAX_PDF_PAGES} 页 ({source_page_count})，"
+            f"只处理前 {MAX_PDF_PAGES} 页"
+        )
 
     pdf_semaphore = asyncio.Semaphore(config.PDF_OCR_CONCURRENCY)
 

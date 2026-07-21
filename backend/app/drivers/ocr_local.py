@@ -2,10 +2,12 @@ import ollama
 import base64
 import os
 import asyncio
+from contextlib import closing
 from typing import Dict, Any
 
 from app.core import config
 from app.utils.image_preprocess import preprocess_image
+from app.utils.pdf_renderer import get_pdf_page_count, render_pdf_pages
 
 _ocr_client = None
 
@@ -87,29 +89,27 @@ MAX_PDF_PAGES = 50
 
 
 async def ocr_pdf(pdf_path: str) -> Dict[str, Any]:
-    import fitz
     import tempfile
     import shutil
 
-    doc = fitz.open(pdf_path)
-    total_pages = len(doc)
-    if total_pages > MAX_PDF_PAGES:
-        print(f"[OCR] PDF 超过 {MAX_PDF_PAGES} 页 ({total_pages})，只处理前 {MAX_PDF_PAGES} 页")
-        total_pages = MAX_PDF_PAGES
-    doc.close()
+    source_page_count = get_pdf_page_count(pdf_path)
+    total_pages = min(source_page_count, MAX_PDF_PAGES)
+    if source_page_count > MAX_PDF_PAGES:
+        print(
+            f"[OCR] PDF 超过 {MAX_PDF_PAGES} 页 ({source_page_count})，"
+            f"只处理前 {MAX_PDF_PAGES} 页"
+        )
 
     temp_dir = tempfile.mkdtemp(prefix="ocr_pdf_")
     temp_paths = []
 
     try:
-        doc = fitz.open(pdf_path)
-        for page_num in range(1, total_pages + 1):
-            page = doc.load_page(page_num - 1)
-            pix = page.get_pixmap(dpi=150)
-            temp_path = os.path.join(temp_dir, f"page_{page_num}.png")
-            pix.save(temp_path)
-            temp_paths.append((page_num, temp_path))
-        doc.close()
+        with closing(render_pdf_pages(pdf_path, max_pages=MAX_PDF_PAGES)) as pages:
+            for page_num, png_bytes in pages:
+                temp_path = os.path.join(temp_dir, f"page_{page_num}.png")
+                with open(temp_path, "wb") as image_file:
+                    image_file.write(png_bytes)
+                temp_paths.append((page_num, temp_path))
 
         pdf_semaphore = asyncio.Semaphore(4)
 

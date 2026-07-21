@@ -10,6 +10,6 @@
 - [ ] 云端模型的数据处理和留存说明准确。
 - [ ] README 和 SECURITY 明确说明当前认证与网络边界。
 - [ ] npm、Python 依赖审计和 CI 通过。
-- [ ] 已选择并加入适当的开源许可证。
+- [x] 已加入 `GPL-3.0-only` 许可证和 PDF 渲染依赖的第三方许可说明。
 - [ ] GitHub Secret Scanning、Code Scanning 和分支规则按公开仓库策略启用。
 - [ ] 从未携带敏感历史的新仓库或新根提交发布。

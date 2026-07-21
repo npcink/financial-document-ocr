@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 使用宽松许可的 `pypdfium2`/PDFium 替换 AGPL/商业双许可的 PyMuPDF，保持
+  150 DPI、多页 PDF 和最多处理 50 页的 OCR 行为。
+
+### Added
+
+- 加入 `GPL-3.0-only` 项目许可证和 PDF 渲染依赖的第三方许可说明。
+
 ## [3.0.0] - 2026-07-15
 
 ### Added

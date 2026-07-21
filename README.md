@@ -105,3 +105,9 @@ docker compose config --quiet
 - [部署](docs/DEPLOYMENT.md)
 - [备份与恢复](docs/BACKUP_AND_RESTORE.md)
 - [公开发布检查表](docs/PUBLIC_RELEASE_CHECKLIST.md)
+
+## 许可证
+
+本项目采用 [GNU General Public License v3.0 only](LICENSE)。PDF 渲染由宽松
+许可的 `pypdfium2`/PDFium 提供；重新分发镜像或应用包时必须保留其随构建产物
+提供的第三方许可文件，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
