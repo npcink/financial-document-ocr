@@ -1,0 +1,13 @@
+.env
+*.pyc
+__pycache__/
+node_modules/
+dist/
+backend/static/
+data/
+backups/
+.sisyphus/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store

@@ -1,0 +1,33 @@
+name: ${COMPOSE_PROJECT_NAME:-invoice-ocr}
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "${HOST_PORT:-8300}:8000"
+    volumes:
+      - "${HOST_DATA_DIR:-./data}:/app/data"
+    environment:
+      DATA_DIR: /app/data
+    env_file:
+      - "${ENV_FILE:-./backend/.env}"
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)"
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
