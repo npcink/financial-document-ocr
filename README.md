@@ -102,6 +102,7 @@ docker compose config --quiet
 完整说明见：
 
 - [开发指南](DEVELOPMENT_GUIDE.md)
+- [项目沿革与权威边界](docs/HISTORY.md)
 - [部署](docs/DEPLOYMENT.md)
 - [备份与恢复](docs/BACKUP_AND_RESTORE.md)
 - [公开发布检查表](docs/PUBLIC_RELEASE_CHECKLIST.md)
