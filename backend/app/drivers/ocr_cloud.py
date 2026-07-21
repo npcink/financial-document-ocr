@@ -10,6 +10,7 @@ from typing import Dict, Any
 from app.core import config
 from app.services.rate_limit import siliconflow_request_with_retry
 from app.utils.image_preprocess import preprocess_image
+from app.utils.logging_safety import safe_exception_label, safe_file_label
 from app.utils.pdf_renderer import get_pdf_page_count, render_pdf_pages
 
 _http_client: httpx.AsyncClient = None
@@ -54,6 +55,7 @@ def _guess_mime_type(image_path: str) -> str:
 
 async def ocr_image(image_path: str) -> Dict[str, Any]:
     processed_path = preprocess_image(image_path)
+    file_label = safe_file_label(image_path)
     try:
         with open(processed_path, "rb") as f:
             image_b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -79,7 +81,7 @@ async def ocr_image(image_path: str) -> Dict[str, Any]:
             "max_tokens": 4096,
         }
 
-        print(f"[OCR] 开始识别: {os.path.basename(image_path)}, 图片大小: {os.path.getsize(image_path)} 字节")
+        print(f"[OCR] 开始识别: {file_label}, 图片大小: {os.path.getsize(image_path)} 字节")
 
         async def _do_request():
             client = get_http_client()
@@ -93,7 +95,7 @@ async def ocr_image(image_path: str) -> Dict[str, Any]:
 
         data = await siliconflow_request_with_retry(
             _do_request,
-            label=f"OCR image {os.path.basename(image_path)}",
+            label="OCR image",
             bucket="ocr",
         )
         full_text = data["choices"][0]["message"]["content"]
@@ -108,11 +110,12 @@ async def ocr_image(image_path: str) -> Dict[str, Any]:
             "confidence": 0.85,
             "word_count": len(cleaned_lines),
         }
-    except Exception as e:
-        print(f"[OCR] 识别失败: {e}")
+    except Exception as exc:
+        error_label = safe_exception_label(exc)
+        print(f"[OCR] 识别失败: {file_label} error={error_label}")
         return {
             "texts": [],
-            "full_text": f"OCR_ERROR: {str(e)}",
+            "full_text": f"OCR_ERROR: {error_label}",
             "confidence": 0.0,
             "word_count": 0,
         }

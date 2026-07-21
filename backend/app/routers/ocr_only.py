@@ -8,6 +8,7 @@ from typing import List
 
 from fastapi import APIRouter, File, UploadFile, HTTPException
 from app.services.ocr import ocr_image, ocr_pdf
+from app.utils.logging_safety import safe_exception_label, safe_file_label
 from app.db import UPLOAD_DIR
 
 router = APIRouter()
@@ -42,7 +43,10 @@ def _extract_images_from_zip(zip_path: str, target_dir: str) -> List[str]:
                 continue  # 不解压嵌套 zip
             info = zf.getinfo(member)
             if info.file_size > MAX_FILE_SIZE:
-                print(f"[OCR] 跳过超大文件: {basename} ({info.file_size} 字节)")
+                print(
+                    f"[OCR] 跳过超大文件: {safe_file_label(basename)} "
+                    f"({info.file_size} 字节)"
+                )
                 continue
             target_path = os.path.join(target_dir, basename)
             with zf.open(member) as src, open(target_path, "wb") as dst:
@@ -123,11 +127,11 @@ async def ocr_recognize(files: List[UploadFile] = File(...)):
                 "word_count": ocr_result.get("word_count", 0),
                 "pages": ocr_result.get("pages", 1),
             })
-        except Exception as e:
+        except Exception as exc:
             results.append({
                 "filename": filename,
                 "type": file_type,
-                "ocr_text": f"ERROR: {str(e)}",
+                "ocr_text": f"ERROR: {safe_exception_label(exc)}",
                 "lines": [],
                 "word_count": 0,
                 "pages": 1,

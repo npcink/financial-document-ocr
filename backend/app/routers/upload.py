@@ -16,6 +16,7 @@ from app.models.schemas import (
     UploadSessionResponse,
 )
 from app.db import create_job, verify_job_ownership, get_child_jobs, UPLOAD_DIR
+from app.utils.logging_safety import safe_exception_label, safe_file_label
 
 router = APIRouter()
 
@@ -64,12 +65,15 @@ def _extract_zip(zip_path: str, target_dir: str, max_extract_files: int = MAX_BA
                 continue  # 不解压嵌套 zip
             info = zf.getinfo(member)
             if info.file_size > MAX_FILE_SIZE:
-                print(f"[UPLOAD] 跳过超大文件: {basename} ({info.file_size} 字节)")
+                print(
+                    f"[UPLOAD] 跳过超大文件: {safe_file_label(basename)} "
+                    f"({info.file_size} 字节)"
+                )
                 continue
             target_path = _unique_path(target_dir, basename)
             real_path = os.path.realpath(target_path)
             if not real_path.startswith(real_target + os.sep):
-                print(f"[UPLOAD] 跳过非法路径: {member}")
+                print(f"[UPLOAD] 跳过非法路径: {safe_file_label(member)}")
                 continue
             with zf.open(member) as src, open(target_path, "wb") as dst:
                 dst.write(src.read())
@@ -331,7 +335,7 @@ async def upload_session_chunk(
             "status": "failed",
             "filenames": [],
             "file_count": 0,
-            "error_message": f"{type(exc).__name__}: {exc}",
+            "error_message": safe_exception_label(exc),
             "uploaded_at": _now(),
         }
         _write_manifest(upload_id, manifest)

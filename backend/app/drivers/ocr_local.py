@@ -7,6 +7,7 @@ from typing import Dict, Any
 
 from app.core import config
 from app.utils.image_preprocess import preprocess_image
+from app.utils.logging_safety import safe_exception_label
 from app.utils.pdf_renderer import get_pdf_page_count, render_pdf_pages
 
 _ocr_client = None
@@ -69,10 +70,10 @@ def _ocr_image_sync(image_path: str) -> Dict[str, Any]:
             "confidence": 0.85,
             "word_count": len(lines),
         }
-    except Exception as e:
+    except Exception as exc:
         return {
             "texts": [],
-            "full_text": f"OCR_ERROR: {str(e)}",
+            "full_text": f"OCR_ERROR: {safe_exception_label(exc)}",
             "confidence": 0.0,
             "word_count": 0,
         }

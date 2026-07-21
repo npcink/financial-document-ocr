@@ -17,6 +17,7 @@ from app.utils.document_schema import schema_for, validate_schema_fields
 from app.utils.field_normalizer import normalize_fields as normalize_structured_fields
 from app.utils.financial_fields import normalize_financial_fields
 from app.utils.list_record_extractor import extract_list_records
+from app.utils.logging_safety import safe_exception_label, safe_file_label, safe_job_label
 from app import db
 from app.core import config
 from app.db import UPLOAD_DIR, EXPORT_DIR
@@ -129,6 +130,7 @@ async def _process_text_core(
     expected_document_count: int = 1,
     bypass_llm_cache: bool = False,
 ) -> list[dict[str, Any]]:
+    file_label = safe_file_label(filename)
     prompt_text = llm_text or preprocessed_text
     pre_type, pre_conf = pre_classify(preprocessed_text, threshold=config.PRECLASSIFY_THRESHOLD)
     hash_payload = "\n".join([
@@ -149,7 +151,7 @@ async def _process_text_core(
     if llm_cached is not None:
         llm_result = llm_cached["llm_result"]
         doc_type = llm_result.get("document_type", pre_type or "unknown")
-        print(f"[LLM Cache] HIT: {filename}")
+        print(f"[LLM Cache] HIT: {file_label}")
     else:
         async with _llm_semaphore:
             if pre_conf >= config.PRECLASSIFY_THRESHOLD:
@@ -158,22 +160,22 @@ async def _process_text_core(
             else:
                 llm_result = await classify_and_extract(prompt_text, requirement)
                 doc_type = llm_result.get("document_type", "unknown")
-            print(f"[LLM Cache] {'BYPASS' if bypass_llm_cache else 'MISS'}: {filename}")
+            print(f"[LLM Cache] {'BYPASS' if bypass_llm_cache else 'MISS'}: {file_label}")
 
     if _is_llm_error(llm_result):
         message = llm_result.get("error") or "LLM 处理失败"
-        print(f"[LLM Error] {filename}: {message}")
+        print(f"[LLM Error] {file_label}: failed")
         return [_error_core(raw_text, doc_type, message)]
 
     documents = _normalize_llm_documents(llm_result, doc_type)
     if not documents:
         message = "LLM 未返回可导出的结构化字段"
-        print(f"[LLM Schema] {filename}: {message}")
+        print(f"[LLM Schema] {file_label}: {message}")
         return [_error_core(raw_text, doc_type, message)]
 
     quality_error = _llm_quality_error(preprocessed_text, documents, expected_document_count)
     if quality_error:
-        print(f"[LLM Quality Gate] {filename}: {quality_error}")
+        print(f"[LLM Quality Gate] {file_label}: rejected")
         return [_error_core(raw_text, doc_type, quality_error)]
 
     cores: list[dict[str, Any]] = []
@@ -200,7 +202,7 @@ async def _process_text_core(
             financial_review_fields.extend(normalize_financial_fields(fields, document_type, preprocessed_text))
         if not _has_extractable_fields(fields):
             message = f"第 {doc_index} 张单据没有可导出的字段"
-            print(f"[LLM Schema] {filename}#{doc_index}: {message}")
+            print(f"[LLM Schema] {file_label} document={doc_index}: {message}")
             cores.append(_error_core(raw_text, document_type, message))
             continue
         confidence = document.get("confidence", llm_result.get("confidence", 0.0))
@@ -215,15 +217,24 @@ async def _process_text_core(
         validation_payload = {"fields": fields, "document_type": document_type}
         validation = validate_llm_result(validation_payload, document_type)
         if validation.get('auto_fixed'):
-            print(f"[Field Validator] {filename}#{doc_index} auto-fixed: {list(validation['auto_fixed'].keys())}")
+            print(
+                f"[Field Validator] {file_label} document={doc_index} "
+                f"auto_fixed_count={len(validation['auto_fixed'])}"
+            )
         if validation.get('needs_review'):
-            print(f"[Field Validator] {filename}#{doc_index} needs review: {validation['needs_review']}")
+            print(
+                f"[Field Validator] {file_label} document={doc_index} "
+                f"review_count={len(validation['needs_review'])}"
+            )
             low_confidence_fields.extend(validation['needs_review'])
             low_confidence_fields = list(set(low_confidence_fields))
         schema_validation = validate_schema_fields(fields, document_type)
         warning_messages = []
         if schema_validation.get("needs_review"):
-            print(f"[Schema Validator] {filename}#{doc_index} needs review: {schema_validation}")
+            print(
+                f"[Schema Validator] {file_label} document={doc_index} "
+                f"review_count={len(schema_validation['needs_review'])}"
+            )
             low_confidence_fields.extend(schema_validation["needs_review"])
             low_confidence_fields = list(set(low_confidence_fields))
             if schema_validation.get("missing_required"):
@@ -246,12 +257,13 @@ async def _process_text_core(
     if cache_miss and cacheable and all(core["status"] == "completed" for core in cores):
         await asyncio.to_thread(db.set_llm_cache, text_hash, llm_result, api_token)
     elif cache_miss:
-        print(f"[LLM Cache] SKIP low-quality result: {filename}")
+        print(f"[LLM Cache] SKIP low-quality result: {file_label}")
 
     return cores
 
 
 def _rule_document_cores(raw_text: str, documents: list[dict[str, Any]], filename: str) -> list[dict[str, Any]]:
+    file_label = safe_file_label(filename)
     cores = []
     for doc_index, document in enumerate(documents, start=1):
         document_type = document.get("document_type") or "unknown"
@@ -267,7 +279,10 @@ def _rule_document_cores(raw_text: str, documents: list[dict[str, Any]], filenam
         validation_payload = {"fields": fields, "document_type": document_type}
         validation = validate_llm_result(validation_payload, document_type)
         if validation.get("auto_fixed"):
-            print(f"[Rule Extractor] {filename}#{doc_index} auto-fixed: {list(validation['auto_fixed'].keys())}")
+            print(
+                f"[Rule Extractor] {file_label} document={doc_index} "
+                f"auto_fixed_count={len(validation['auto_fixed'])}"
+            )
         if validation.get("needs_review"):
             low_confidence_fields.extend(validation["needs_review"])
 
@@ -422,11 +437,15 @@ def _has_extractable_fields(fields: dict) -> bool:
 
 def _normalize_fields(fields: dict, filename: str, doc_type: str = "") -> tuple[dict, list[str]]:
     normalized_fields, conflict_fields = normalize_structured_fields(fields, doc_type)
+    file_label = safe_file_label(filename)
 
     if normalized_fields != fields:
-        print(f"[Field Normalizer] {filename} normalized: {list(fields.keys())} -> {list(normalized_fields.keys())}")
+        print(
+            f"[Field Normalizer] {file_label} normalized "
+            f"input_count={len(fields)} output_count={len(normalized_fields)}"
+        )
     if conflict_fields:
-        print(f"[Field Normalizer] {filename} conflicts: {conflict_fields}")
+        print(f"[Field Normalizer] {file_label} conflict_count={len(conflict_fields)}")
     return normalized_fields, conflict_fields
 
 
@@ -437,6 +456,7 @@ async def _repair_missing_or_low_confidence_fields(
     requirement: str,
     filename: str,
 ) -> dict:
+    file_label = safe_file_label(filename)
     target_fields = _repair_target_fields(document_type, fields)
     if not target_fields:
         return {}
@@ -452,7 +472,7 @@ async def _repair_missing_or_low_confidence_fields(
             requirement,
         )
     if _is_llm_error(repair_result):
-        print(f"[LLM Repair] {filename}: {repair_result.get('error')}")
+        print(f"[LLM Repair] {file_label}: failed")
         return {}
 
     repaired = _coerce_fields(repair_result.get("fields"))
@@ -462,7 +482,7 @@ async def _repair_missing_or_low_confidence_fields(
         if field_name in target_fields and _field_value_text(field_data)
     }
     if repaired:
-        print(f"[LLM Repair] {filename}: filled {list(repaired.keys())}")
+        print(f"[LLM Repair] {file_label}: filled_count={len(repaired)}")
     return repaired
 
 
@@ -612,21 +632,21 @@ async def _process_file_core(
     template_type: str = "general",
     bypass_llm_cache: bool = False,
 ) -> list[dict[str, Any]]:
+    file_label = safe_file_label(filename)
     raw_text = ocr_result["full_text"]
 
     preprocessed_text = quick_preprocess(raw_text)
     if preprocessed_text != raw_text:
-        print(f"[OCR Preprocess] {filename}: cleaned {len(raw_text)} -> {len(preprocessed_text)} chars")
+        print(f"[OCR Preprocess] {file_label}: cleaned {len(raw_text)} -> {len(preprocessed_text)} chars")
 
     list_records = extract_list_records(raw_text, ocr_result, filename, filepath)
     if list_records:
-        doc_type = list_records[0].get("document_type", "unknown")
-        print(f"[Rule Extractor] {filename}: {doc_type} records={len(list_records)}")
+        print(f"[Rule Extractor] {file_label}: records={len(list_records)}")
         return _rule_document_cores(raw_text, list_records, filename)
 
     layout_documents = analyze_layout(preprocessed_text, ocr_result)
     if len(layout_documents) > 1:
-        print(f"[Layout Analyzer] {filename}: split into {len(layout_documents)} layout documents")
+        print(f"[Layout Analyzer] {file_label}: split into {len(layout_documents)} layout documents")
     layout_parts = [document.text for document in layout_documents] or [preprocessed_text]
 
     parts = []
@@ -634,7 +654,7 @@ async def _process_file_core(
         split_parts = split_ocr_documents(layout_part)
         parts.extend(split_parts)
     if len(parts) > 1:
-        print(f"[Document Splitter] {filename}: split into {len(parts)} documents")
+        print(f"[Document Splitter] {file_label}: split into {len(parts)} documents")
 
     expected_total = _expected_document_count(preprocessed_text, layout_documents, parts)
     cores: list[dict[str, Any]] = []
@@ -674,6 +694,7 @@ def _expected_document_count(text: str, layout_documents: list, parts: list[str]
 
 
 async def process_job(job_id: str):
+    job_label = safe_job_label(job_id)
     try:
         job = await asyncio.to_thread(db.get_job, job_id)
         if not job:
@@ -713,6 +734,7 @@ async def process_job(job_id: str):
         checkpoint_lock = asyncio.Lock()
 
         async def _process_one(filepath: str, filename: str, existing_for_file: list[dict] = None) -> None:
+            file_label = safe_file_label(filename)
             existing_for_file = sorted(existing_for_file or [], key=lambda item: item["id"])
             if existing_for_file and all(item.get("status") == "completed" for item in existing_for_file):
                 return
@@ -739,7 +761,7 @@ async def process_job(job_id: str):
                 cached = await asyncio.to_thread(db.get_ocr_cache, file_hash, api_token)
                 if cached is not None:
                     ocr_result = json.loads(cached["ocr_result"])
-                    print(f"[Cache] HIT: {filename}")
+                    print(f"[Cache] HIT: {file_label}")
                 else:
                     file_type = get_file_type(filename)
                     async with _ocr_semaphore:
@@ -770,7 +792,7 @@ async def process_job(job_id: str):
                         return
 
                     await asyncio.to_thread(db.set_ocr_cache, file_hash, ocr_result, api_token)
-                    print(f"[Cache] MISS: {filename}")
+                    print(f"[Cache] MISS: {file_label}")
 
                 cores = await _process_file_core(
                     result_id,
@@ -817,8 +839,8 @@ async def process_job(job_id: str):
                             await asyncio.to_thread(db.save_checkpoint, job_id, checkpoint)
 
             except Exception as exc:
-                message = f"{type(exc).__name__}: {exc}"
-                print(f"[Pipeline Error] {job_id}/{filename}: {message}")
+                message = safe_exception_label(exc)
+                print(f"[Pipeline Error] {job_label}/{file_label}: {message}")
                 await asyncio.to_thread(
                     db.update_result,
                     result_id,
@@ -844,12 +866,12 @@ async def process_job(job_id: str):
                     work_queue.task_done()
 
         worker_count = _job_file_worker_count(job, len(files))
-        print(f"[Pipeline] Job {job_id} file_workers={worker_count}, files={len(files)}")
+        print(f"[Pipeline] Job {job_label} file_workers={worker_count}, files={len(files)}")
         tasks = [_worker() for _ in range(worker_count)]
         try:
             await asyncio.wait_for(asyncio.gather(*tasks), timeout=config.JOB_TIMEOUT)
         except asyncio.TimeoutError:
-            print(f"[Pipeline] Job {job_id} 超时（{config.JOB_TIMEOUT}s），已完成文件可导出")
+            print(f"[Pipeline] Job {job_label} 超时（{config.JOB_TIMEOUT}s），已完成文件可导出")
             results = await asyncio.to_thread(db.get_results, job_id)
             finished = [r for r in results if r["status"] in ("completed", "failed")]
             status = "timeout_partial" if finished else "failed"
@@ -874,14 +896,18 @@ async def process_job(job_id: str):
             await asyncio.to_thread(db.update_job_status, job_id, "completed")
         await asyncio.to_thread(db.save_checkpoint, job_id, [])
 
-    except Exception as e:
-        await asyncio.to_thread(db.update_job_status, job_id, "failed", str(e))
+    except Exception as exc:
+        message = safe_exception_label(exc)
+        print(f"[Pipeline Error] {job_label}: {message}")
+        await asyncio.to_thread(db.update_job_status, job_id, "failed", message)
 
     finally:
         cleanup_job(job_id)
 
 
 async def process_single_file(job_id: str, result_id: int, filepath: str, filename: str):
+    job_label = safe_job_label(job_id)
+    file_label = safe_file_label(filename)
     try:
         job = await asyncio.to_thread(db.get_job, job_id)
         requirement = job.get("requirement", "") if job else ""
@@ -950,8 +976,8 @@ async def process_single_file(job_id: str, result_id: int, filepath: str, filena
                     source_document_count=document_count,
                 )
     except Exception as exc:
-        message = f"{type(exc).__name__}: {exc}"
-        print(f"[Pipeline Error] retry {job_id}/{filename}: {message}")
+        message = safe_exception_label(exc)
+        print(f"[Pipeline Error] retry {job_label}/{file_label}: {message}")
         await asyncio.to_thread(db.update_result, result_id, status="failed", error_message=message)
 
 

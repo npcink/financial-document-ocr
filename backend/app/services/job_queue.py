@@ -5,6 +5,7 @@ from typing import Set
 from app.core import config
 from app import db
 from app.services.pipeline import process_job
+from app.utils.logging_safety import safe_exception_label, safe_job_label
 
 
 SHORT_JOB_FILE_LIMIT = 10
@@ -46,7 +47,10 @@ class JobQueue:
                 return False
             self._queued.add(job_id)
             await self._queue.put((priority, next(self._sequence), job_id))
-            print(f"[JobQueue] queued job={job_id} priority={priority} size={self._queue.qsize()}")
+            print(
+                f"[JobQueue] queued job={safe_job_label(job_id)} "
+                f"priority={priority} size={self._queue.qsize()}"
+            )
             return True
 
     async def position(self, job_id: str) -> int | None:
@@ -90,11 +94,14 @@ class JobQueue:
                 self._queued.discard(job_id)
                 self._active.add(job_id)
             try:
-                print(f"[JobQueue] worker={index} start job={job_id}")
+                print(f"[JobQueue] worker={index} start job={safe_job_label(job_id)}")
                 await process_job(job_id)
-                print(f"[JobQueue] worker={index} finish job={job_id}")
+                print(f"[JobQueue] worker={index} finish job={safe_job_label(job_id)}")
             except Exception as exc:
-                print(f"[JobQueue] worker={index} job={job_id} failed: {exc}")
+                print(
+                    f"[JobQueue] worker={index} job={safe_job_label(job_id)} "
+                    f"failed error={safe_exception_label(exc)}"
+                )
             finally:
                 async with self._lock:
                     self._active.discard(job_id)
@@ -118,7 +125,8 @@ class JobQueue:
         active_same_parent = sum(1 for sibling_parent_id in sibling_parent_ids if sibling_parent_id == parent_job_id)
         if active_same_parent >= limit:
             print(
-                f"[JobQueue] defer child={job_id} parent={parent_job_id} "
+                f"[JobQueue] defer child={safe_job_label(job_id)} "
+                f"parent={safe_job_label(parent_job_id)} "
                 f"active_same_parent={active_same_parent} limit={limit}"
             )
             return True

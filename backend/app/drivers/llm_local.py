@@ -4,6 +4,7 @@ import asyncio
 from typing import Dict, Any, Optional
 
 from app.core import config
+from app.utils.logging_safety import safe_exception_label
 
 _client = None
 
@@ -118,8 +119,8 @@ def _classify_and_extract_sync(ocr_text: str, requirement: str = "") -> Dict[str
             "documents": result.get("documents", []),
             "confidence": result.get("confidence", 0.0),
         }
-    except Exception as e:
-        return {"error": f"{type(e).__name__}: {e}", "document_type": "unknown", "fields": {}}
+    except Exception as exc:
+        return {"error": safe_exception_label(exc), "document_type": "unknown", "fields": {}}
 
 
 async def classify_and_extract(ocr_text: str, requirement: str = "") -> Dict[str, Any]:
@@ -197,8 +198,8 @@ def _extract_fields_only_sync(ocr_text: str, doc_type: str, requirement: str = "
             "documents": result.get("documents", []),
             "confidence": result.get("confidence", 0.0),
         }
-    except Exception as e:
-        return {"error": f"{type(e).__name__}: {e}", "document_type": doc_type, "fields": {}}
+    except Exception as exc:
+        return {"error": safe_exception_label(exc), "document_type": doc_type, "fields": {}}
 
 
 async def extract_fields_only(ocr_text: str, doc_type: str, requirement: str = "") -> Dict[str, Any]:
@@ -261,8 +262,8 @@ def _extract_missing_fields_sync(
             "fields": {key: value for key, value in fields.items() if key in allowed},
             "confidence": result.get("confidence", 0.0),
         }
-    except Exception as e:
-        return {"error": f"{type(e).__name__}: {e}", "document_type": doc_type, "fields": {}}
+    except Exception as exc:
+        return {"error": safe_exception_label(exc), "document_type": doc_type, "fields": {}}
 
 
 async def extract_missing_fields(

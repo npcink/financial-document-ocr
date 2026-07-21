@@ -11,6 +11,7 @@ from app import db
 from app.routers import upload, process, export, health, ocr_only
 from app.db import init_db, purge_expired_results, DB_PATH, UPLOAD_DIR, EXPORT_DIR
 from app.services.job_queue import job_queue
+from app.utils.logging_safety import safe_exception_label
 
 logger = logging.getLogger("app")
 
@@ -46,8 +47,8 @@ async def lifespan(app: FastAPI):
         conn.close()
         if updated:
             print(f"[Startup] 已重新排队 {updated} 个重启前处理中任务")
-    except Exception as e:
-        print(f"[Startup] 僵尸任务恢复失败: {e}")
+    except Exception as exc:
+        print(f"[Startup] 僵尸任务恢复失败: {safe_exception_label(exc)}")
 
     queued_jobs = await asyncio.to_thread(db.list_jobs_by_status, ["queued", "pending"])
     for queued_job in queued_jobs:
@@ -104,7 +105,7 @@ async def session_middleware(request: Request, call_next):
 async def global_exception_handler(request: Request, exc: Exception):
     if isinstance(exc, HTTPException):
         raise exc
-    logger.error(f"Unhandled error: {exc}", exc_info=True)
+    logger.error("Unhandled error type=%s", safe_exception_label(exc))
     return JSONResponse(
         status_code=500,
         content={"detail": "服务器内部错误"},

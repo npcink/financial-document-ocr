@@ -3,6 +3,8 @@
 import os
 from typing import Dict, Any
 
+from app.utils.logging_safety import safe_exception_label
+
 
 def extract_text(filepath: str) -> Dict[str, Any]:
     ext = os.path.splitext(filepath)[1].lower()
@@ -17,8 +19,8 @@ def extract_text(filepath: str) -> Dict[str, Any]:
             return _extract_xml(filepath)
         else:
             return {"full_text": "", "texts": []}
-    except Exception as e:
-        return {"full_text": f"EXTRACT_ERROR: {str(e)}", "texts": []}
+    except Exception as exc:
+        return {"full_text": f"EXTRACT_ERROR: {safe_exception_label(exc)}", "texts": []}
 
 
 def _extract_docx(filepath: str) -> Dict[str, Any]:

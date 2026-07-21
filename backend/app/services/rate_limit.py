@@ -8,6 +8,7 @@ from typing import Awaitable, Callable, TypeVar
 import httpx
 
 from app.core import config
+from app.utils.logging_safety import safe_exception_label
 
 T = TypeVar("T")
 
@@ -106,7 +107,10 @@ async def siliconflow_request_with_retry(
             fallback_delay = delays[min(attempt, len(delays) - 1)]
             delay = retry_after if retry_after is not None else fallback_delay
             delay += random.uniform(0, min(1.0, delay * 0.1))
-            print(f"[SiliconFlow] {label} retry {attempt + 1}/{max_retries - 1} after {delay:.1f}s: {exc}")
+            print(
+                f"[SiliconFlow] {label} retry {attempt + 1}/{max_retries - 1} "
+                f"after {delay:.1f}s error={safe_exception_label(exc)}"
+            )
             await asyncio.sleep(delay)
 
     raise last_exception

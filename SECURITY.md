@@ -29,5 +29,7 @@
 - `data/jobs.db` 可能包含 OCR 原文和结构化财务字段，备份必须加密并设置保留期限。
 - SQLite 在线备份使用 `.backup`，不要直接复制写入中的数据库及 WAL 文件。
 - 源码发布包应使用 `scripts/backup-source.sh` 生成并校验。
+- 运行日志只记录不可逆的文件/任务标签、计数和异常类型；不得恢复打印原始文件名、
+  任务标识、异常消息、OCR 原文或结构化字段名称。
 
 详细部署和恢复要求见 `docs/DEPLOYMENT.md` 与 `docs/BACKUP_AND_RESTORE.md`。
