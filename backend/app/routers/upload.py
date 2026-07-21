@@ -17,6 +17,12 @@ from app.models.schemas import (
 )
 from app.db import create_job, verify_job_ownership, get_child_jobs, UPLOAD_DIR
 from app.utils.logging_safety import safe_exception_label, safe_file_label
+from app.utils.safe_paths import (
+    resolve_under,
+    resource_path,
+    sanitize_filename,
+    validate_resource_id,
+)
 
 router = APIRouter()
 
@@ -35,12 +41,12 @@ def _is_allowed(filename: str) -> bool:
 
 
 def _unique_path(target_dir: str, filename: str) -> str:
-    basename = os.path.basename(filename)
+    basename = sanitize_filename(filename)
     stem, ext = os.path.splitext(basename)
-    candidate = os.path.join(target_dir, basename)
+    candidate = resolve_under(target_dir, basename)
     index = 2
     while os.path.exists(candidate):
-        candidate = os.path.join(target_dir, f"{stem}_{index}{ext}")
+        candidate = resolve_under(target_dir, f"{stem}_{index}{ext}")
         index += 1
     return candidate
 
@@ -48,7 +54,6 @@ def _unique_path(target_dir: str, filename: str) -> str:
 def _extract_zip(zip_path: str, target_dir: str, max_extract_files: int = MAX_BATCH_FILES) -> List[str]:
     extracted = []
     MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-    real_target = os.path.realpath(target_dir)
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         members = [m for m in zf.namelist() if not m.startswith(("__MACOSX", ".")) and os.path.basename(m)]
@@ -57,7 +62,10 @@ def _extract_zip(zip_path: str, target_dir: str, max_extract_files: int = MAX_BA
             members = members[:max_extract_files]
 
         for member in members:
-            basename = os.path.basename(member)
+            try:
+                basename = sanitize_filename(member)
+            except ValueError:
+                continue
             if not basename or not _is_allowed(basename):
                 continue
             ext = os.path.splitext(basename)[1].lower()
@@ -71,10 +79,6 @@ def _extract_zip(zip_path: str, target_dir: str, max_extract_files: int = MAX_BA
                 )
                 continue
             target_path = _unique_path(target_dir, basename)
-            real_path = os.path.realpath(target_path)
-            if not real_path.startswith(real_target + os.sep):
-                print(f"[UPLOAD] 跳过非法路径: {safe_file_label(member)}")
-                continue
             with zf.open(member) as src, open(target_path, "wb") as dst:
                 dst.write(src.read())
             extracted.append(target_path)
@@ -87,15 +91,19 @@ def _chunk_files(items: list[str], size: int) -> list[list[str]]:
 
 
 def _session_dir(upload_id: str) -> str:
-    return os.path.join(SESSION_BASE_DIR, os.path.basename(upload_id))
+    try:
+        identifier = validate_resource_id(upload_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="上传会话不存在") from exc
+    return resolve_under(SESSION_BASE_DIR, identifier)
 
 
 def _session_files_dir(upload_id: str) -> str:
-    return os.path.join(_session_dir(upload_id), "files")
+    return resolve_under(_session_dir(upload_id), "files")
 
 
 def _session_manifest_path(upload_id: str) -> str:
-    return os.path.join(_session_dir(upload_id), "manifest.json")
+    return resolve_under(_session_dir(upload_id), "manifest.json")
 
 
 def _now() -> str:
@@ -113,7 +121,7 @@ def _read_manifest(upload_id: str) -> dict:
 def _write_manifest(upload_id: str, manifest: dict) -> None:
     manifest["updated_at"] = _now()
     os.makedirs(_session_dir(upload_id), exist_ok=True)
-    temp_path = _session_manifest_path(upload_id) + ".tmp"
+    temp_path = resolve_under(_session_dir(upload_id), "manifest.json.tmp")
     with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
     os.replace(temp_path, _session_manifest_path(upload_id))
@@ -158,7 +166,10 @@ async def _save_upload_file_to_dir(f: UploadFile, target_dir: str, remaining_cap
     if not f.filename or remaining_capacity <= 0 or not _is_allowed(f.filename):
         return []
 
-    filename = os.path.basename(f.filename)
+    try:
+        filename = sanitize_filename(f.filename)
+    except ValueError:
+        return []
     ext = os.path.splitext(filename)[1].lower()
     saved_path = _unique_path(target_dir, filename)
 
@@ -190,20 +201,22 @@ async def _save_upload_file_to_dir(f: UploadFile, target_dir: str, remaining_cap
 
 
 async def _create_job_from_saved_files(job_id: str, saved_files: list[str], api_token: str) -> None:
+    validate_resource_id(job_id)
     total_files = len(saved_files)
     if total_files > CHILD_BATCH_SIZE:
         child_chunks = _chunk_files(saved_files, CHILD_BATCH_SIZE)
         await asyncio.to_thread(create_job, job_id, "", "general", total_files, api_token, None, True, 0)
         for index, chunk in enumerate(child_chunks, start=1):
             child_id = f"{job_id}_{index:04d}"
-            child_dir = os.path.join(UPLOAD_BASE_DIR, child_id)
+            child_dir = resource_path(UPLOAD_BASE_DIR, child_id)
             os.makedirs(child_dir, exist_ok=True)
             for filename in chunk:
-                src = os.path.join(UPLOAD_BASE_DIR, job_id, filename)
+                safe_filename = sanitize_filename(filename)
+                src = resource_path(UPLOAD_BASE_DIR, job_id, safe_filename)
                 if os.path.exists(src):
-                    shutil.move(src, os.path.join(child_dir, filename))
+                    shutil.move(src, resolve_under(child_dir, safe_filename))
             await asyncio.to_thread(create_job, child_id, "", "general", len(chunk), api_token, job_id, False, index)
-        shutil.rmtree(os.path.join(UPLOAD_BASE_DIR, job_id), ignore_errors=True)
+        shutil.rmtree(resource_path(UPLOAD_BASE_DIR, job_id), ignore_errors=True)
     else:
         await asyncio.to_thread(create_job, job_id, "", "general", total_files, api_token)
 
@@ -221,7 +234,7 @@ async def upload_files(request: Request):
     api_token = getattr(request.state, "session_id", "")
 
     job_id = uuid.uuid4().hex[:12]
-    job_dir = os.path.join(UPLOAD_BASE_DIR, job_id)
+    job_dir = resource_path(UPLOAD_BASE_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
 
     saved_files: List[str] = []
@@ -306,7 +319,10 @@ async def upload_session_chunk(
     chunks = manifest.setdefault("chunks", {})
     old_chunk = chunks.get(str(chunk_index), {})
     for old_filename in old_chunk.get("filenames", []):
-        old_path = os.path.join(session_files_dir, old_filename)
+        try:
+            old_path = resolve_under(session_files_dir, sanitize_filename(old_filename))
+        except ValueError:
+            continue
         if os.path.exists(old_path):
             os.remove(old_path)
 
@@ -369,14 +385,18 @@ async def complete_upload_session(request: Request, upload_id: str):
         raise HTTPException(status_code=400, detail="未找到支持的文件格式")
 
     job_id = uuid.uuid4().hex[:12]
-    job_dir = os.path.join(UPLOAD_BASE_DIR, job_id)
+    job_dir = resource_path(UPLOAD_BASE_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
     final_filenames = []
     for filename in saved_files:
-        src = os.path.join(session_files_dir, filename)
+        try:
+            safe_filename = sanitize_filename(filename)
+            src = resolve_under(session_files_dir, safe_filename)
+        except ValueError:
+            continue
         if not os.path.exists(src):
             continue
-        dst = _unique_path(job_dir, filename)
+        dst = _unique_path(job_dir, safe_filename)
         shutil.move(src, dst)
         final_filenames.append(os.path.basename(dst))
     if not final_filenames:
@@ -403,19 +423,22 @@ async def get_uploaded_file(request: Request, job_id: str, filename: str):
     job = await asyncio.to_thread(verify_job_ownership, job_id, api_token)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
-    safe_filename = os.path.basename(filename)
-    filepath = os.path.join(UPLOAD_BASE_DIR, job_id, safe_filename)
+    try:
+        validate_resource_id(job_id)
+        safe_filename = sanitize_filename(filename)
+        filepath = resource_path(UPLOAD_BASE_DIR, job_id, safe_filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="文件不存在") from exc
     if not os.path.exists(filepath):
         children = await asyncio.to_thread(get_child_jobs, job_id)
         for child in children:
-            child_path = os.path.join(UPLOAD_BASE_DIR, child["id"], safe_filename)
+            try:
+                child_path = resource_path(UPLOAD_BASE_DIR, child["id"], safe_filename)
+            except ValueError:
+                continue
             if os.path.exists(child_path):
                 filepath = child_path
                 break
-    real_path = os.path.realpath(filepath)
-    real_base = os.path.realpath(UPLOAD_BASE_DIR)
-    if not real_path.startswith(real_base + os.sep):
-        raise HTTPException(status_code=403, detail="非法路径")
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="文件不存在")
     return FileResponse(filepath)
